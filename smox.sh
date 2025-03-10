@@ -46,6 +46,11 @@ echo "Configuring Dovecot..."
 sed -i 's/^#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf
 sed -i 's/^#mail_location = mbox:~/mail:INBOX=~/mail/\nmail_location = maildir:~\/Maildir\//g' /etc/dovecot/conf.d/10-mail.conf
 
+# Ensure Dovecot listens only on IPv4
+echo "listen = 0.0.0.0" > /etc/dovecot/dovecot.conf
+sed -i '/service imap-login {/a \ \ \ \ inet_listener imap { address = 0.0.0.0 }\n \ \ \ \ inet_listener imaps { address = 0.0.0.0 }' /etc/dovecot/conf.d/10-master.conf
+sed -i '/service pop3-login {/a \ \ \ \ inet_listener pop3 { address = 0.0.0.0 }\n \ \ \ \ inet_listener pop3s { address = 0.0.0.0 }' /etc/dovecot/conf.d/10-master.conf
+
 systemctl restart dovecot
 
 # Configure OpenDKIM
