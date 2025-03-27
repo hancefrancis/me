@@ -40,6 +40,12 @@ postconf -e "smtpd_sasl_auth_enable=yes"
 postconf -e "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
 postconf -e "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
 
+# Configure Milter in Postfix
+postconf -e "milter_protocol = 2"
+postconf -e "milter_default_action = accept"
+postconf -e "smtpd_milters = inet:127.0.0.1:8891"
+postconf -e "non_smtp_milters = \$smtp_milters"
+
 systemctl restart postfix
 
 # Configure Dovecot
@@ -47,7 +53,6 @@ echo "Configuring Dovecot..."
 sed -i 's/^#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf
 sed -i 's|^#mail_location = mbox:~/mail:INBOX=~/mail|mail_location = maildir:~/Maildir|' /etc/dovecot/conf.d/10-mail.conf
 
-# Ensure Dovecot listens only on IPv4
 echo "listen = *" > /etc/dovecot/dovecot.conf
 sed -i '/service imap-login {/a \ \ \ \ inet_listener imap { address = 0.0.0.0 }\n \ \ \ \ inet_listener imaps { address = 0.0.0.0 }' /etc/dovecot/conf.d/10-master.conf
 sed -i '/service pop3-login {/a \ \ \ \ inet_listener pop3 { address = 0.0.0.0 }\n \ \ \ \ inet_listener pop3s { address = 0.0.0.0 }' /etc/dovecot/conf.d/10-master.conf
@@ -66,7 +71,6 @@ Mode sv
 PidFile /var/run/opendkim/opendkim.pid
 UMask 002" > /etc/opendkim.conf
 
-# Ensure OpenDKIM service is properly configured
 echo "SOCKET=inet:8891@localhost" > /etc/default/opendkim
 
 # Generate DKIM keys
