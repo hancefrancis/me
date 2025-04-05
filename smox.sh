@@ -23,7 +23,7 @@ sysctl -p
 # Update system & install base packages
 echo "Updating and installing base packages..."
 apt update && apt upgrade -y
-apt install -y apache2 git unzip software-properties-common
+apt install -y apache2 git unzip curl software-properties-common
 
 # Allow Apache through firewall if ufw is active
 if command -v ufw &>/dev/null && ufw status | grep -q active; then
@@ -32,32 +32,37 @@ fi
 
 # Install Certbot (Let's Encrypt)
 echo "Installing Certbot for SSL..."
-add-apt-repository ppa:certbot/certbot -y
-apt update
 apt install -y certbot python3-certbot-apache
 
 # Bootstrap Website Setup
 echo "Installing Bootstrap demo website..."
 TMP_DIR="/tmp/bootstrap-demo"
 rm -rf $TMP_DIR
-git clone https://github.com/StartBootstrap/startbootstrap-freelancer.git $TMP_DIR
-cd $TMP_DIR && npm install && npm run build || cp -r $TMP_DIR/* $TMP_DIR/dist/
+mkdir -p $TMP_DIR
+cd $TMP_DIR
+
+git clone https://github.com/StartBootstrap/startbootstrap-freelancer.git
+cd startbootstrap-freelancer
+curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+apt install -y nodejs
+npm install && npm run build || cp -r * dist/
 
 # Deploy to Apache web root
 rm -rf /var/www/html/*
-cp -r $TMP_DIR/dist/* /var/www/html/
+cp -r dist/* /var/www/html/
 chown -R www-data:www-data /var/www/html
 
 # Enable required Apache modules
 a2enmod rewrite ssl
+systemctl restart apache2
 
 # Get SSL certificate
 echo "Obtaining SSL certificate with Certbot..."
-certbot --apache -d $HOSTNAME --non-interactive --agree-tos -m admin@$HOSTNAME
+certbot --apache -d $HOSTNAME --non-interactive --agree-tos -m admin@$HOSTNAME --redirect
 
 # Mail Server Installation
 echo "Installing mail server packages..."
-apt install -y postfix dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools openssl
+apt install -y postfix dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools
 
 # Configure Postfix
 postconf -e "inet_interfaces = all"
@@ -83,8 +88,6 @@ systemctl restart postfix
 sed -i 's/^#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf
 sed -i 's|^#mail_location = mbox:~/mail:INBOX=~/mail|mail_location = maildir:~/Maildir|' /etc/dovecot/conf.d/10-mail.conf
 echo "listen = *" > /etc/dovecot/dovecot.conf
-sed -i '/service imap-login {/a \ \ \ \ inet_listener imap { address = 0.0.0.0 }\n \ \ \ \ inet_listener imaps { address = 0.0.0.0 }' /etc/dovecot/conf.d/10-master.conf
-sed -i '/service pop3-login {/a \ \ \ \ inet_listener pop3 { address = 0.0.0.0 }\n \ \ \ \ inet_listener pop3s { address = 0.0.0.0 }' /etc/dovecot/conf.d/10-master.conf
 
 systemctl restart dovecot
 
@@ -113,7 +116,7 @@ chmod 600 /etc/opendkim/keys/$HOSTNAME/mail.private
 openssl rsa -in /etc/opendkim/keys/$HOSTNAME/mail.private -pubout -out /etc/opendkim/keys/$HOSTNAME/mail.public 2>/dev/null
 
 # Extract DKIM TXT value only
-DKIM_RECORD=$(awk 'BEGIN{ORS=""} /"v=DKIM1;/{gsub(/"/,""); print}' /etc/opendkim/keys/$HOSTNAME/mail.txt)
+DKIM_RECORD=$(awk 'BEGIN{ORS=""} /"v=DKIM1;/{gsub(/\"/,""); print}' /etc/opendkim/keys/$HOSTNAME/mail.txt)
 
 # DNS Records
 SPF_RECORD="v=spf1 mx -all"
@@ -124,3 +127,5 @@ echo "SPF Record: $SPF_RECORD"
 echo "DKIM Record: mail._domainkey TXT \"$DKIM_RECORD\""
 echo "DMARC Record: _dmarc TXT $DMARC_RECORD"
 echo -e "\n🌐 Visit your secure site at: https://$HOSTNAME"
+
+echo -e "\nMail server and demo site setup complete!"
