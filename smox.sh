@@ -1,7 +1,6 @@
 #!/bin/bash
 # This script installs and configures a mail server and a demo website.
-# It now includes a choice of 5 Bootstrap templates and ensures that
-# the HELO value in Postfix matches the static domain.
+# It offers a choice of 5 Bootstrap templates and an option to install Certbot for SSL.
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
@@ -9,7 +8,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Ask for hostname (must be a real, pointed domain for SSL)
+# Ask for hostname (must be a real, pointed domain for SSL if using Certbot)
 read -p "Enter the hostname (e.g., mail.example.com): " HOSTNAME
 hostnamectl set-hostname "$HOSTNAME"
 echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
@@ -33,15 +32,21 @@ if command -v ufw &>/dev/null && ufw status | grep -q active; then
     ufw allow "Apache Full"
 fi
 
-# Set Apache's ServerName to the hostname to prevent warnings and to help Certbot
+# Set Apache's ServerName to the hostname to prevent warnings and help Certbot
 echo "Configuring Apache with ServerName..."
 echo "ServerName $HOSTNAME" > /etc/apache2/conf-available/servername.conf
 a2enconf servername
 systemctl reload apache2
 
-# Install Certbot (Let's Encrypt)
-echo "Installing Certbot for SSL..."
-apt install -y certbot python3-certbot-apache
+# Ask whether to install Certbot for SSL
+read -p "Do you want to install Certbot and obtain an SSL certificate? (y/n): " INSTALL_CERTBOT
+
+if [[ $INSTALL_CERTBOT =~ ^[Yy]$ ]]; then
+    echo "Installing Certbot for SSL..."
+    apt install -y certbot python3-certbot-apache
+else
+    echo "Skipping Certbot installation and SSL certificate obtaining."
+fi
 
 # Prompt for Bootstrap template selection
 echo "Select a Bootstrap template to deploy:"
@@ -70,7 +75,7 @@ cd "$TMP_DIR" || exit 1
 git clone "$TEMPLATE_REPO" template
 cd template || exit 1
 
-# Install Node.js if needed, build if possible, else copy files directly.
+# Install Node.js if needed, build if possible, else copy files directly
 curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 apt install -y nodejs
 
@@ -79,7 +84,7 @@ if [ -f package.json ]; then
     npm install
     npm run build || cp -r * dist/
 else
-    # No build steps; copy files directly into a dist/ folder
+    # No build step; copy files directly into a dist/ folder
     mkdir -p dist && cp -r ./* dist/
 fi
 
@@ -92,9 +97,11 @@ chown -R www-data:www-data /var/www/html
 a2enmod rewrite ssl
 systemctl restart apache2
 
-# Get SSL certificate using Certbot
-echo "Obtaining SSL certificate with Certbot for domain: $HOSTNAME..."
-certbot --apache -d "$HOSTNAME" --non-interactive --agree-tos -m admin@"$HOSTNAME" --redirect
+# Get SSL certificate if Certbot was installed
+if [[ $INSTALL_CERTBOT =~ ^[Yy]$ ]]; then
+    echo "Obtaining SSL certificate with Certbot for domain: $HOSTNAME..."
+    certbot --apache -d "$HOSTNAME" --non-interactive --agree-tos -m admin@"$HOSTNAME" --redirect
+fi
 
 # Install Mail Server packages
 echo "Installing mail server packages..."
@@ -107,8 +114,10 @@ postconf -e "myhostname = $HOSTNAME"
 postconf -e "mydestination = \$myhostname, localhost, localhost.localdomain"
 postconf -e "mynetworks = 127.0.0.0/8"
 postconf -e "home_mailbox = Maildir/"
-postconf -e "smtpd_tls_cert_file=/etc/letsencrypt/live/$HOSTNAME/fullchain.pem"
-postconf -e "smtpd_tls_key_file=/etc/letsencrypt/live/$HOSTNAME/privkey.pem"
+if [[ $INSTALL_CERTBOT =~ ^[Yy]$ ]]; then
+    postconf -e "smtpd_tls_cert_file=/etc/letsencrypt/live/$HOSTNAME/fullchain.pem"
+    postconf -e "smtpd_tls_key_file=/etc/letsencrypt/live/$HOSTNAME/privkey.pem"
+fi
 postconf -e "smtpd_use_tls=yes"
 postconf -e "smtpd_sasl_auth_enable=yes"
 postconf -e "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
@@ -157,11 +166,14 @@ openssl rsa -in /etc/opendkim/keys/$HOSTNAME/mail.private -pubout -out /etc/open
 DKIM_RECORD=$(awk 'BEGIN{ORS=""} /v=DKIM1;/{gsub(/"/,""); print}' /etc/opendkim/keys/$HOSTNAME/mail.txt)
 
 # DNS Records
+SPF_RECORD="v=spf1 mx -all"
 DMARC_RECORD="v=DMARC1; p=quarantine; rua=mailto:admin@$HOSTNAME; ruf=mailto:admin@$HOSTNAME; pct=100"
 
 echo -e "\n✅ DNS Records to add:\n"
+echo "SPF Record: $SPF_RECORD"
 echo "DKIM Record: mail._domainkey TXT \"$DKIM_RECORD\""
 echo "DMARC Record: _dmarc TXT $DMARC_RECORD"
-echo -e "\n🌐 Visit your secure site at: https://$HOSTNAME"
+echo -e "\n🌐 Visit your site at: https://$HOSTNAME (if using Certbot with SSL)"
 
 echo -e "\nMail server and demo site setup complete!"
+
