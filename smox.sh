@@ -1,6 +1,9 @@
 #!/bin/bash
 # This script installs and configures a mail server and a demo website.
-# It offers a choice of 5 Bootstrap templates and an option to install Certbot for SSL.
+# It offers the option to install Certbot and choose from 20 different Bootstrap templates.
+# After deployment, the script replaces default text and email addresses in HTML files 
+# with the static domain (hostname) entered by the user.
+# It also extracts a complete, well-formatted DKIM TXT record for use in DNS.
 
 # Ensure the script is run as root
 if [ "$(id -u)" -ne 0 ]; then
@@ -8,7 +11,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Ask for hostname (must be a real, pointed domain for SSL if using Certbot)
+# Ask for hostname (must be a real, pointed domain for SSL if Certbot is used)
 read -p "Enter the hostname (e.g., mail.example.com): " HOSTNAME
 hostnamectl set-hostname "$HOSTNAME"
 echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
@@ -38,53 +41,100 @@ echo "ServerName $HOSTNAME" > /etc/apache2/conf-available/servername.conf
 a2enconf servername
 systemctl reload apache2
 
-# Ask whether to install Certbot for SSL
+# Prompt whether to install Certbot for SSL
 read -p "Do you want to install Certbot and obtain an SSL certificate? (y/n): " INSTALL_CERTBOT
-
 if [[ $INSTALL_CERTBOT =~ ^[Yy]$ ]]; then
     echo "Installing Certbot for SSL..."
     apt install -y certbot python3-certbot-apache
+    CERTBOT_INSTALLED="yes"
 else
-    echo "Skipping Certbot installation and SSL certificate obtaining."
+    echo "Skipping Certbot installation. You will need to configure SSL manually."
+    CERTBOT_INSTALLED="no"
 fi
 
-# Prompt for Bootstrap template selection
+# --- Template Selection ---
+# Define 20 templates with corresponding GitHub repository URLs.
+templates=(
+    "Freelancer"
+    "Agency"
+    "Clean Blog"
+    "Creative"
+    "Grayscale"
+    "New Age"
+    "One Page Wonder"
+    "Landing Page"
+    "Business Frontpage"
+    "Modern Business"
+    "Stylish Portfolio"
+    "Coming Soon"
+    "Resume"
+    "Small Business"
+    "Shop Homepage"
+    "Business Casual"
+    "Full Width Pics"
+    "SB Admin 2"
+    "SB Admin"
+    "Placeholder Template"
+)
+
+repos=(
+    "https://github.com/StartBootstrap/startbootstrap-freelancer.git"
+    "https://github.com/StartBootstrap/startbootstrap-agency.git"
+    "https://github.com/StartBootstrap/startbootstrap-clean-blog.git"
+    "https://github.com/StartBootstrap/startbootstrap-creative.git"
+    "https://github.com/StartBootstrap/startbootstrap-grayscale.git"
+    "https://github.com/StartBootstrap/startbootstrap-new-age.git"
+    "https://github.com/StartBootstrap/startbootstrap-one-page-wonder.git"
+    "https://github.com/StartBootstrap/startbootstrap-landing-page.git"
+    "https://github.com/StartBootstrap/startbootstrap-business-frontpage.git"
+    "https://github.com/StartBootstrap/startbootstrap-modern-business.git"
+    "https://github.com/StartBootstrap/startbootstrap-stylish-portfolio.git"
+    "https://github.com/StartBootstrap/startbootstrap-coming-soon.git"
+    "https://github.com/StartBootstrap/startbootstrap-resume.git"
+    "https://github.com/StartBootstrap/startbootstrap-small-business.git"
+    "https://github.com/StartBootstrap/startbootstrap-shop-homepage.git"
+    "https://github.com/StartBootstrap/startbootstrap-business-casual.git"
+    "https://github.com/StartBootstrap/startbootstrap-full-width-pics.git"
+    "https://github.com/startbootstrap/startbootstrap-sb-admin-2.git"
+    "https://github.com/startbootstrap/startbootstrap-sb-admin.git"
+    "https://github.com/StartBootstrap/placeholder-template.git"
+)
+
+# Display the menu
 echo "Select a Bootstrap template to deploy:"
-echo "1) Freelancer"
-echo "2) Agency"
-echo "3) Clean Blog"
-echo "4) Creative"
-echo "5) Grayscale"
-read -p "Enter the number (1-5): " template_choice
+for i in "${!templates[@]}"; do
+    index=$((i+1))
+    echo "$index) ${templates[$i]}"
+done
+read -p "Enter the number (1-20): " template_choice
 
-case "$template_choice" in
-    1) TEMPLATE_REPO="https://github.com/StartBootstrap/startbootstrap-freelancer.git" ;;
-    2) TEMPLATE_REPO="https://github.com/StartBootstrap/startbootstrap-agency.git" ;;
-    3) TEMPLATE_REPO="https://github.com/StartBootstrap/startbootstrap-clean-blog.git" ;;
-    4) TEMPLATE_REPO="https://github.com/StartBootstrap/startbootstrap-creative.git" ;;
-    5) TEMPLATE_REPO="https://github.com/StartBootstrap/startbootstrap-grayscale.git" ;;
-    *) echo "Invalid selection, defaulting to Freelancer template." ; TEMPLATE_REPO="https://github.com/StartBootstrap/startbootstrap-freelancer.git" ;;
-esac
+# Validate input and set the repository URL
+if ! [[ "$template_choice" =~ ^[0-9]+$ ]] || [ "$template_choice" -lt 1 ] || [ "$template_choice" -gt 20 ]; then
+    echo "Invalid selection, defaulting to the first template: ${templates[0]}"
+    template_choice=1
+fi
+# Arrays are zero-indexed:
+selected_repo="${repos[$((template_choice-1))]}"
+echo "You selected: ${templates[$((template_choice-1))]}."
+echo "Template repository: $selected_repo"
 
-# Clone and build the selected Bootstrap template
-echo "Installing Bootstrap demo website using template from: $TEMPLATE_REPO"
+# Clone and build the selected template
+echo "Installing Bootstrap demo website using template from: $selected_repo"
 TMP_DIR="/tmp/bootstrap-demo"
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 cd "$TMP_DIR" || exit 1
-git clone "$TEMPLATE_REPO" template
+git clone "$selected_repo" template
 cd template || exit 1
 
-# Install Node.js if needed, build if possible, else copy files directly
+# Install Node.js if needed and build if possible; else copy files directly.
 curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
 apt install -y nodejs
 
-# If package.json exists, assume a build step is defined.
 if [ -f package.json ]; then
     npm install
-    npm run build || cp -r * dist/
+    npm run build || mkdir -p dist && cp -r * dist/
 else
-    # No build step; copy files directly into a dist/ folder
     mkdir -p dist && cp -r ./* dist/
 fi
 
@@ -93,17 +143,24 @@ rm -rf /var/www/html/*
 cp -r dist/* /var/www/html/
 chown -R www-data:www-data /var/www/html
 
+# Replace default template values.
+# 1. Replace any occurrence of "Start Bootstrap" with the static domain ($HOSTNAME)
+# 2. Replace default email addresses that start with "info@" so that the domain is your hostname.
+echo "Customizing deployed HTML files with your domain and email..."
+find /var/www/html -type f -name "*.html" -exec sed -i "s/Start Bootstrap/$HOSTNAME/g" {} \;
+find /var/www/html -type f -name "*.html" -exec sed -Ei "s/(info@)[a-zA-Z0-9.-]+\b/\1$HOSTNAME/g" {} \;
+
 # Enable required Apache modules
 a2enmod rewrite ssl
 systemctl restart apache2
 
-# Get SSL certificate if Certbot was installed
-if [[ $INSTALL_CERTBOT =~ ^[Yy]$ ]]; then
+# If Certbot was chosen, obtain the SSL certificate and configure Apache redirection.
+if [ "$CERTBOT_INSTALLED" = "yes" ]; then
     echo "Obtaining SSL certificate with Certbot for domain: $HOSTNAME..."
     certbot --apache -d "$HOSTNAME" --non-interactive --agree-tos -m admin@"$HOSTNAME" --redirect
 fi
 
-# Install Mail Server packages
+# --- Mail Server Installation ---
 echo "Installing mail server packages..."
 apt install -y postfix dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools
 
@@ -114,17 +171,19 @@ postconf -e "myhostname = $HOSTNAME"
 postconf -e "mydestination = \$myhostname, localhost, localhost.localdomain"
 postconf -e "mynetworks = 127.0.0.0/8"
 postconf -e "home_mailbox = Maildir/"
-if [[ $INSTALL_CERTBOT =~ ^[Yy]$ ]]; then
+
+# Set certificate paths for Postfix only if Certbot was installed
+if [ "$CERTBOT_INSTALLED" = "yes" ]; then
     postconf -e "smtpd_tls_cert_file=/etc/letsencrypt/live/$HOSTNAME/fullchain.pem"
     postconf -e "smtpd_tls_key_file=/etc/letsencrypt/live/$HOSTNAME/privkey.pem"
+    postconf -e "smtpd_use_tls=yes"
 fi
-postconf -e "smtpd_use_tls=yes"
+
 postconf -e "smtpd_sasl_auth_enable=yes"
 postconf -e "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
 postconf -e "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
 postconf -e "milter_protocol = 2"
 postconf -e "milter_default_action = accept"
-postconf -e "smtpd_milters = inet:127.0.0.1:8891"
 postconf -e "non_smtp_milters = \$smtp_milters"
 # Ensure the HELO value matches the configured hostname
 postconf -e "smtp_helo_name = $HOSTNAME"
@@ -138,9 +197,8 @@ echo "listen = *" > /etc/dovecot/dovecot.conf
 
 systemctl restart dovecot
 
-# Configure OpenDKIM
+# --- OpenDKIM Configuration ---
 mkdir -p /etc/opendkim/keys/$HOSTNAME
-
 cat <<EOF > /etc/opendkim.conf
 Domain                  $HOSTNAME
 KeyFile                 /etc/opendkim/keys/$HOSTNAME/mail.private
@@ -162,18 +220,19 @@ chmod 600 /etc/opendkim/keys/$HOSTNAME/mail.private
 # Convert DKIM private key to public PEM format
 openssl rsa -in /etc/opendkim/keys/$HOSTNAME/mail.private -pubout -out /etc/opendkim/keys/$HOSTNAME/mail.public 2>/dev/null
 
-# Extract DKIM TXT value only (adjust this extraction if necessary)
-DKIM_RECORD=$(awk 'BEGIN{ORS=""} /v=DKIM1;/{gsub(/"/,""); print}' /etc/opendkim/keys/$HOSTNAME/mail.txt)
+# Extract the complete DKIM TXT record.
+# This method reads the mail.txt file generated by opendkim-genkey,
+# removes newlines, and then uses sed to extract the content within the quotes.
+DKIM_RAW=$(tr -d '\n' < /etc/opendkim/keys/$HOSTNAME/mail.txt)
+DKIM_RECORD=$(echo "$DKIM_RAW" | sed -e 's/.*("\(.*\)").*/\1/')
+if [ -z "$DKIM_RECORD" ]; then
+    echo "⚠️  DKIM record extraction failed."
+else
+    echo -e "\n✅ DNS Records to add:\n"
+    DMARC_RECORD="v=DMARC1; p=quarantine; rua=mailto:admin@$HOSTNAME; ruf=mailto:postmaster@$HOSTNAME; pct=100"
+    echo "DKIM Record: mail._domainkey TXT \"$DKIM_RECORD\""
+    echo "DMARC Record: _dmarc TXT $DMARC_RECORD"
+fi
 
-# DNS Records
-SPF_RECORD="v=spf1 mx -all"
-DMARC_RECORD="v=DMARC1; p=quarantine; rua=mailto:admin@$HOSTNAME; ruf=mailto:admin@$HOSTNAME; pct=100"
-
-echo -e "\n✅ DNS Records to add:\n"
-echo "SPF Record: $SPF_RECORD"
-echo "DKIM Record: mail._domainkey TXT \"$DKIM_RECORD\""
-echo "DMARC Record: _dmarc TXT $DMARC_RECORD"
-echo -e "\n🌐 Visit your site at: https://$HOSTNAME (if using Certbot with SSL)"
-
+echo -e "\n🌐 Visit your secure site at: https://$HOSTNAME"
 echo -e "\nMail server and demo site setup complete!"
-
