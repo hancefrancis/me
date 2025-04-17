@@ -1,23 +1,25 @@
 #!/bin/bash
-# This script installs and configures a mail server and a demo website.
-# It offers the option to install Certbot and choose from 20 different Bootstrap templates.
-# After deployment, the script replaces default text and email addresses in HTML files 
-# with the static domain (hostname) entered by the user.
-# It also extracts a complete, well-formatted DKIM TXT record for use in DNS.
+################################################################################
+# WordPress + Mail‑server auto‑installer
+# ‑ Optional Let’s Encrypt SSL
+# ‑ Postfix + Dovecot + OpenDKIM
+# ‑ 20 free WP themes to choose
+################################################################################
 
-# Ensure the script is run as root
+set -e
+
+## 0. Root check --------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
-    echo "This script must be run as root. Use sudo." >&2
-    exit 1
+  echo "❌  Run as root (sudo …)" >&2; exit 1
 fi
 
-# Ask for hostname (must be a real, pointed domain for SSL if Certbot is used)
-read -p "Enter the hostname (e.g., mail.example.com): " HOSTNAME
+## 1. Hostname ----------------------------------------------------------------
+read -rp "Enter the FQDN hostname (e.g. mail.example.com): " HOSTNAME
 hostnamectl set-hostname "$HOSTNAME"
 echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
 
-# Disable IPv6
-echo "Disabling IPv6..."
+## 2. Disable IPv6 ------------------------------------------------------------
+echo "Disabling IPv6…"
 cat <<EOF >> /etc/sysctl.conf
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
@@ -25,214 +27,172 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sysctl -p
 
-# Update system & install base packages
-echo "Updating and installing base packages..."
-apt update && apt upgrade -y
-apt install -y apache2 git unzip curl software-properties-common
+## 3. Base packages -----------------------------------------------------------
+echo "Updating packages…"
+apt update && apt -y upgrade
+apt install -y apache2 mariadb-server php php-mysql php-gd php-xml php-curl \
+               php-zip php-mbstring git unzip curl software-properties-common
 
-# Allow Apache through firewall if ufw is active
+# Firewall (optional)
 if command -v ufw &>/dev/null && ufw status | grep -q active; then
-    ufw allow "Apache Full"
+  ufw allow "Apache Full"
 fi
 
-# Set Apache's ServerName to the hostname to prevent warnings and help Certbot
-echo "Configuring Apache with ServerName..."
-echo "ServerName $HOSTNAME" > /etc/apache2/conf-available/servername.conf
+# Apache server‑name (helps Certbot)
+echo "ServerName $HOSTNAME" >/etc/apache2/conf-available/servername.conf
 a2enconf servername
 systemctl reload apache2
 
-# Prompt whether to install Certbot for SSL
-read -p "Do you want to install Certbot and obtain an SSL certificate? (y/n): " INSTALL_CERTBOT
-if [[ $INSTALL_CERTBOT =~ ^[Yy]$ ]]; then
-    echo "Installing Certbot for SSL..."
-    apt install -y certbot python3-certbot-apache
-    CERTBOT_INSTALLED="yes"
+## 4. Certbot (optional) -------------------------------------------------------
+read -rp "Install Certbot & HTTPS now? (y/n): " CERT_CHOICE
+if [[ $CERT_CHOICE =~ ^[Yy]$ ]]; then
+  apt install -y certbot python3-certbot-apache
+  CERTBOT=yes
 else
-    echo "Skipping Certbot installation. You will need to configure SSL manually."
-    CERTBOT_INSTALLED="no"
+  CERTBOT=no
 fi
 
-# --- Template Selection ---
-# Define 20 templates with corresponding GitHub repository URLs.
-templates=(
-    "Freelancer"
-    "Agency"
-    "Clean Blog"
-    "Creative"
-    "Grayscale"
-    "New Age"
-    "One Page Wonder"
-    "Landing Page"
-    "Business Frontpage"
-    "Modern Business"
-    "Stylish Portfolio"
-    "Coming Soon"
-    "Resume"
-    "Small Business"
-    "Shop Homepage"
-    "Business Casual"
-    "Full Width Pics"
-    "SB Admin 2"
-    "SB Admin"
-    "Placeholder Template"
+## 5. WordPress installation ---------------------------------------------------
+# a) MariaDB – create WP DB & user
+echo "Configuring MariaDB…"
+systemctl enable --now mariadb
+
+WP_DB="wordpress"
+WP_USER="wpuser"
+WP_PASS=$(openssl rand -base64 16)
+mysql -e "CREATE DATABASE $WP_DB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+mysql -e "CREATE USER '$WP_USER'@'localhost' IDENTIFIED BY '$WP_PASS';"
+mysql -e "GRANT ALL PRIVILEGES ON $WP_DB.* TO '$WP_USER'@'localhost'; FLUSH PRIVILEGES;"
+
+# b) WP‑CLI
+echo "Installing WP‑CLI…"
+curl -sSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp
+chmod +x /usr/local/bin/wp
+
+# c) WordPress core
+DOCROOT=/var/www/html
+rm -rf "$DOCROOT"/*
+sudo -u www-data wp core download --path="$DOCROOT"
+sudo -u www-data wp config create \
+      --dbname="$WP_DB" --dbuser="$WP_USER" --dbpass="$WP_PASS" \
+      --dbhost=localhost --path="$DOCROOT" --skip-check
+
+ADMIN_PW=$(openssl rand -base64 12)
+sudo -u www-data wp core install \
+      --url="https://$HOSTNAME" --title="My Site" \
+      --admin_user=admin --admin_password="$ADMIN_PW" \
+      --admin_email="admin@$HOSTNAME" --skip-email \
+      --path="$DOCROOT"
+
+chown -R www-data:www-data "$DOCROOT"
+
+## 6. Theme picker (20 free themes) -------------------------------------------
+theme_names=(
+  "Astra" "OceanWP" "Neve" "Hestia" "Zakra"
+  "ColorMag" "Spacious" "Sydney" "GeneratePress" "Storefront"
+  "Kadence" "Blocksy" "Hello Elementor" "Poseidon" "Customizr"
+  "Rife Free" "Ashe" "Phlox" "Twenty Twenty‑Four" "Twenty Twenty‑Three"
+)
+theme_slugs=(
+  astra oceanwp neve hestia zakra
+  colormag spacious sydney generatepress storefront
+  kadence blocksy hello-elementor poseidon customizr
+  rife-free ashe phlox twentytwentyfour twentytwentythree
 )
 
-repos=(
-    "https://github.com/StartBootstrap/startbootstrap-freelancer.git"
-    "https://github.com/StartBootstrap/startbootstrap-agency.git"
-    "https://github.com/StartBootstrap/startbootstrap-clean-blog.git"
-    "https://github.com/StartBootstrap/startbootstrap-creative.git"
-    "https://github.com/StartBootstrap/startbootstrap-grayscale.git"
-    "https://github.com/StartBootstrap/startbootstrap-new-age.git"
-    "https://github.com/StartBootstrap/startbootstrap-one-page-wonder.git"
-    "https://github.com/StartBootstrap/startbootstrap-landing-page.git"
-    "https://github.com/StartBootstrap/startbootstrap-business-frontpage.git"
-    "https://github.com/StartBootstrap/startbootstrap-modern-business.git"
-    "https://github.com/StartBootstrap/startbootstrap-stylish-portfolio.git"
-    "https://github.com/StartBootstrap/startbootstrap-coming-soon.git"
-    "https://github.com/StartBootstrap/startbootstrap-resume.git"
-    "https://github.com/StartBootstrap/startbootstrap-small-business.git"
-    "https://github.com/StartBootstrap/startbootstrap-shop-homepage.git"
-    "https://github.com/StartBootstrap/startbootstrap-business-casual.git"
-    "https://github.com/StartBootstrap/startbootstrap-full-width-pics.git"
-    "https://github.com/startbootstrap/startbootstrap-sb-admin-2.git"
-    "https://github.com/startbootstrap/startbootstrap-sb-admin.git"
-    "https://github.com/StartBootstrap/placeholder-template.git"
-)
+echo -e "\nChoose a WordPress theme:"
+for i in "${!theme_names[@]}"; do printf "%2d) %s\n" $((i+1)) "${theme_names[$i]}"; done
+read -rp "Theme number (1‑20): " N
+if ! [[ $N =~ ^[0-9]+$ ]] || (( N<1 || N>20 )); then N=1; fi
+THEME_SLUG="${theme_slugs[$((N-1))]}"
+THEME_NAME="${theme_names[$((N-1))]}"
 
-# Display the menu
-echo "Select a Bootstrap template to deploy:"
-for i in "${!templates[@]}"; do
-    index=$((i+1))
-    echo "$index) ${templates[$i]}"
-done
-read -p "Enter the number (1-20): " template_choice
+echo "Installing theme $THEME_NAME…"
+sudo -u www-data wp theme install "$THEME_SLUG" --activate --path="$DOCROOT"
 
-# Validate input and set the repository URL
-if ! [[ "$template_choice" =~ ^[0-9]+$ ]] || [ "$template_choice" -lt 1 ] || [ "$template_choice" -gt 20 ]; then
-    echo "Invalid selection, defaulting to the first template: ${templates[0]}"
-    template_choice=1
-fi
-# Arrays are zero-indexed:
-selected_repo="${repos[$((template_choice-1))]}"
-echo "You selected: ${templates[$((template_choice-1))]}."
-echo "Template repository: $selected_repo"
-
-# Clone and build the selected template
-echo "Installing Bootstrap demo website using template from: $selected_repo"
-TMP_DIR="/tmp/bootstrap-demo"
-rm -rf "$TMP_DIR"
-mkdir -p "$TMP_DIR"
-cd "$TMP_DIR" || exit 1
-git clone "$selected_repo" template
-cd template || exit 1
-
-# Install Node.js if needed and build if possible; else copy files directly.
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-apt install -y nodejs
-
-if [ -f package.json ]; then
-    npm install
-    npm run build || mkdir -p dist && cp -r * dist/
-else
-    mkdir -p dist && cp -r ./* dist/
+## 7. Enable SSL with Certbot (if chosen) -------------------------------------
+if [ "$CERTBOT" = yes ]; then
+  certbot --apache -d "$HOSTNAME" --non-interactive \
+          --agree-tos -m admin@"$HOSTNAME" --redirect
 fi
 
-# Deploy to Apache web root
-rm -rf /var/www/html/*
-cp -r dist/* /var/www/html/
-chown -R www-data:www-data /var/www/html
-
-# Replace default template values.
-# 1. Replace any occurrence of "Start Bootstrap" with the static domain ($HOSTNAME)
-# 2. Replace default email addresses that start with "info@" so that the domain is your hostname.
-echo "Customizing deployed HTML files with your domain and email..."
-find /var/www/html -type f -name "*.html" -exec sed -i "s/Start Bootstrap/$HOSTNAME/g" {} \;
-find /var/www/html -type f -name "*.html" -exec sed -Ei "s/(info@)[a-zA-Z0-9.-]+\b/\1$HOSTNAME/g" {} \;
-
-# Enable required Apache modules
 a2enmod rewrite ssl
 systemctl restart apache2
 
-# If Certbot was chosen, obtain the SSL certificate and configure Apache redirection.
-if [ "$CERTBOT_INSTALLED" = "yes" ]; then
-    echo "Obtaining SSL certificate with Certbot for domain: $HOSTNAME..."
-    certbot --apache -d "$HOSTNAME" --non-interactive --agree-tos -m admin@"$HOSTNAME" --redirect
-fi
-
-# --- Mail Server Installation ---
-echo "Installing mail server packages..."
+## 8. Mail stack --------------------------------------------------------------
+echo "Installing Postfix / Dovecot / OpenDKIM…"
 apt install -y postfix dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools
 
-# Configure Postfix
 postconf -e "inet_interfaces = all"
 postconf -e "inet_protocols = ipv4"
 postconf -e "myhostname = $HOSTNAME"
 postconf -e "mydestination = \$myhostname, localhost, localhost.localdomain"
 postconf -e "mynetworks = 127.0.0.0/8"
 postconf -e "home_mailbox = Maildir/"
-
-# Set certificate paths for Postfix only if Certbot was installed
-if [ "$CERTBOT_INSTALLED" = "yes" ]; then
-    postconf -e "smtpd_tls_cert_file=/etc/letsencrypt/live/$HOSTNAME/fullchain.pem"
-    postconf -e "smtpd_tls_key_file=/etc/letsencrypt/live/$HOSTNAME/privkey.pem"
-    postconf -e "smtpd_use_tls=yes"
-fi
-
-postconf -e "smtpd_sasl_auth_enable=yes"
-postconf -e "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
-postconf -e "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination"
-postconf -e "milter_protocol = 2"
-postconf -e "milter_default_action = accept"
-postconf -e "non_smtp_milters = \$smtp_milters"
-# Ensure the HELO value matches the configured hostname
 postconf -e "smtp_helo_name = $HOSTNAME"
 
-systemctl restart postfix
-
-# Configure Dovecot
-sed -i 's/^#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf
-sed -i 's|^#mail_location = mbox:~/mail:INBOX=~/mail|mail_location = maildir:~/Maildir|' /etc/dovecot/conf.d/10-mail.conf
-echo "listen = *" > /etc/dovecot/dovecot.conf
-
-systemctl restart dovecot
-
-# --- OpenDKIM Configuration ---
-mkdir -p /etc/opendkim/keys/$HOSTNAME
-cat <<EOF > /etc/opendkim.conf
-Domain                  $HOSTNAME
-KeyFile                 /etc/opendkim/keys/$HOSTNAME/mail.private
-Selector                mail
-Socket                  inet:8891@localhost
-UserID                  opendkim:opendkim
-Mode                    sv
-PidFile                 /var/run/opendkim/opendkim.pid
-UMask                   002
-EOF
-
-echo "SOCKET=inet:8891@localhost" > /etc/default/opendkim
-
-# Generate DKIM key pair
-opendkim-genkey -b 2048 -d "$HOSTNAME" -s mail -D /etc/opendkim/keys/$HOSTNAME
-chown -R opendkim:opendkim /etc/opendkim/keys
-chmod 600 /etc/opendkim/keys/$HOSTNAME/mail.private
-
-# Convert DKIM private key to public PEM format
-openssl rsa -in /etc/opendkim/keys/$HOSTNAME/mail.private -pubout -out /etc/opendkim/keys/$HOSTNAME/mail.public 2>/dev/null
-
-# Extract the complete DKIM TXT record.
-# This method reads the mail.txt file generated by opendkim-genkey,
-# removes newlines, and then uses sed to extract the content within the quotes.
-DKIM_RAW=$(tr -d '\n' < /etc/opendkim/keys/$HOSTNAME/mail.txt)
-DKIM_RECORD=$(echo "$DKIM_RAW" | sed -e 's/.*("\(.*\)").*/\1/')
-if [ -z "$DKIM_RECORD" ]; then
-    echo "⚠️  DKIM record extraction failed."
-else
-    echo -e "\n✅ DNS Records to add:\n"
-    DMARC_RECORD="v=DMARC1; p=quarantine; rua=mailto:admin@$HOSTNAME; ruf=mailto:postmaster@$HOSTNAME; pct=100"
-    echo "DKIM Record: mail._domainkey TXT \"$DKIM_RECORD\""
-    echo "DMARC Record: _dmarc TXT $DMARC_RECORD"
+if [ "$CERTBOT" = yes ]; then
+  postconf -e "smtpd_tls_cert_file = /etc/letsencrypt/live/$HOSTNAME/fullchain.pem"
+  postconf -e "smtpd_tls_key_file  = /etc/letsencrypt/live/$HOSTNAME/privkey.pem"
+  postconf -e "smtpd_use_tls = yes"
 fi
 
-echo -e "\n🌐 Visit your secure site at: https://$HOSTNAME"
-echo -e "\nMail server and demo site setup complete!"
+postconf -e "smtpd_sasl_auth_enable = yes"
+postconf -e "smtpd_relay_restrictions = permit_mynetworks,permit_sasl_authenticated,reject_unauth_destination"
+postconf -e "milter_protocol = 2"
+postconf -e "milter_default_action = accept"
+postconf -e "smtpd_milters = inet:127.0.0.1:8891"
+postconf -e "non_smtp_milters = \$smtp_milters"
+systemctl restart postfix
+
+# Dovecot
+sed -i 's/^#disable_plaintext_auth = yes/disable_plaintext_auth = no/' \
+       /etc/dovecot/conf.d/10-auth.conf
+sed -i 's|^#mail_location .*|mail_location = maildir:~/Maildir|' \
+       /etc/dovecot/conf.d/10-mail.conf
+echo "listen = *" >/etc/dovecot/dovecot.conf
+systemctl restart dovecot
+
+# OpenDKIM
+mkdir -p /etc/opendkim/keys/"$HOSTNAME"
+cat <<EOF >/etc/opendkim.conf
+Domain    $HOSTNAME
+KeyFile   /etc/opendkim/keys/$HOSTNAME/mail.private
+Selector  mail
+Socket    inet:8891@localhost
+UserID    opendkim:opendkim
+Mode      sv
+PidFile   /run/opendkim/opendkim.pid
+UMask     002
+EOF
+echo "SOCKET=inet:8891@localhost" >/etc/default/opendkim
+
+opendkim-genkey -b 2048 -d "$HOSTNAME" -s mail \
+                -D /etc/opendkim/keys/"$HOSTNAME"
+chown -R opendkim:opendkim /etc/opendkim/keys
+chmod 600 /etc/opendkim/keys/"$HOSTNAME"/mail.private
+
+systemctl restart opendkim postfix
+
+# DKIM TXT extraction (single line)
+DKIM_TXT=$(tr -d '\n' </etc/opendkim/keys/"$HOSTNAME"/mail.txt | \
+           sed 's/.*"\(.*\)".*/\1/')
+DMARC="v=DMARC1; p=quarantine; rua=mailto:admin@$HOSTNAME; ruf=mailto:admin@$HOSTNAME; pct=100"
+
+## 9. Summary -----------------------------------------------------------------
+cat <<EOF
+
+───────────────────────────────────────────────────────────────────────────────
+🎉  Installation finished!
+
+🌐  WordPress URL : https://$HOSTNAME
+    Admin user   : admin
+    Admin pass   : $ADMIN_PW
+
+🎨  Active theme : $THEME_NAME
+
+📧  DNS Records (add to your domain):
+    DKIM  : mail._domainkey TXT   "$DKIM_TXT"
+    DMARC : _dmarc          TXT   $DMARC
+
+EOF
