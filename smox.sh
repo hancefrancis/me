@@ -1,37 +1,21 @@
 #!/bin/bash
 ###############################################################################
-#  SMOX
+#                                  SMOX                                       #
 ###############################################################################
 
 PASS_HASH="6f5d598b97078f754e93528da84cdaca0636c5a13dc1903b1a7005680f497f046db9e91d0d28795e04ee92770abcb15b58bbd1898ec004efe52a375f690c7549"
 
-# ── Prompt for the password (no echo)
-read -rsp "Enter installer password: " PASS_INPUT
-echo
+read -rsp "Installer password: " P; echo
+[[ $(printf "%s" "$P" | sha512sum | awk '{print $1}') == "$PASS_HASH" ]] || {
+  echo "❌  Wrong password."; exit 1; }
+unset P
 
-# ── Hash and compare
-if [[ $(printf "%s" "$PASS_INPUT" | sha512sum | awk '{print $1}') != "$PASS_HASH" ]]; then
-  echo "❌  Wrong password.  Exiting."
-  exit 1
-fi
-unset PASS_INPUT   # scrub from memory
-
-# ── Locate payload line number (marker “__PAYLOAD__”)
-PAYLINE=$(grep -n "^__PAYLOAD__$" "$0" | cut -d: -f1)
-((PAYLINE++))      # actual payload starts on next line
-
-# ── Decode ➜ gunzip ➜ execute
-tail -n +$PAYLINE "$0"        | \
-  base64 --decode             | \
-  gunzip                      | \
-  bash -s "$@"                # forward any CLI args
-
+# decode → gunzip → execute inner script
+awk '/^__PAYLOAD__$/ {p=1; next} p' "$0" | base64 -d | gunzip | bash -s -- "$@"
 exit 0
 
-########################################################################
-#                ---  Get the fuck out  ---                #
-########################################################################
+###############################################################################
+#                           ———  GET THE FUCK OUT  ———                        #
+###############################################################################
 __PAYLOAD__
-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
+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
